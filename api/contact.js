@@ -82,7 +82,7 @@ export default async function handler(req, res) {
     // 3) Create or update the contact
     const contactBody = {
       email,
-      firstName: firstName || '',
+      first_name: firstName || '', // Systeme.io expects "first_name"
       language: 'en',
       fields: [{ slug: 'score', value: String(score || '') }],
       tags: tagIds
