@@ -99,13 +99,12 @@ export default async function handler(req, res) {
 
     // 3) Create or update the contact - CORRECTED FIELD NAMES
     const contactBody = {
-      email,
-      first_name: first_name || '', // Systeme.io expects "first_name" with underscore
-      language: 'en',
-      fields: [{ slug: 'score', value: String(score || '') }],
-      tag_ids: tagIds // Systeme.io expects "tag_ids" not "tags"
-    };
-
+  email,
+  firstName: first_name || '', // camelCase
+  language: 'en',
+  fields: [{ slug: 'score', value: String(score || '') }],
+  tagIds: tagIds // camelCase
+};
     console.log('Contact body to send:', contactBody); // Debug logging
 
     const contactResp = await fetch(`${base}/contacts`, {
