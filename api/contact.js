@@ -102,7 +102,7 @@ export default async function handler(req, res) {
       email,
       first_name: first_name || '', // camelCase
       language: 'en',
-      fields: [{ slug: 'first_name', value: String(firstName || '') }]
+      fields: [{ slug: 'first_name', value: String(firstName || '') }],
       fields: [{ slug: 'score', value: String(score || '') }],
       tagIds: tagIds // camelCase
     };
