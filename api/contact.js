@@ -100,10 +100,11 @@ export default async function handler(req, res) {
     // 3) Create or update the contact - CORRECTED FIELD NAMES
     const contactBody = {
       email,
-      first_name: first_name || '',
+      first_name: first_name || '', // camelCase
       language: 'en',
-      custom_fields: [{ slug: 'score', value: String(score || '') }],
-      tag_ids: tagIds
+      fields: [{ slug: 'first_name', value: String(firstName || '') }]
+      fields: [{ slug: 'score', value: String(score || '') }],
+      tagIds: tagIds // camelCase
     };
     console.log('Contact body to send:', contactBody); // Debug logging
 
