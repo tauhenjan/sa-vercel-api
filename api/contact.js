@@ -1,7 +1,6 @@
 /**
- * Vercel Serverless function: api/contact.js
- * Safely creates or updates a Systeme.io contact, stores score, and assigns tags.
- * Accepts POST JSON: { email, first_name, score, tagNames: [ "sadone", "saresult2" ] }
+ * api/contact.js - Final Version
+ * Safely create or update Systeme.io contact, store score, and assign tags.
  */
 
 function parseJsonBody(req) {
@@ -47,7 +46,7 @@ export default async function handler(req, res) {
       if (t && t.name) tagsMap[t.name] = t.id;
     });
 
-    // --- 2) Ensure tag IDs exist (create missing) ---
+    // --- 2) Ensure tag IDs exist ---
     const tagIds = [];
     for (const name of tagNames || []) {
       if (!name) continue;
@@ -69,7 +68,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 3) Check if contact already exists ---
+    // --- 3) Check if contact exists ---
     const searchResp = await fetch(`${base}/contacts?email=${encodeURIComponent(email)}`, {
       headers: { 'X-API-Key': apiKey }
     });
@@ -99,20 +98,21 @@ export default async function handler(req, res) {
       contactResult = created;
       contactId = created.id;
     } else {
-      // UPDATE existing contact
+      // UPDATE existing contact (using merge-patch)
       const updateResp = await fetch(`${base}/contacts/${contactId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        headers: { 'Content-Type': 'application/merge-patch+json', 'X-API-Key': apiKey },
         body: JSON.stringify({
           first_name: first_name || '',
           fields: [{ slug: 'score', value: String(score || '') }]
         })
       });
-      contactResult = await updateResp.json();
-      if (!updateResp.ok) return res.status(502).json({ error: 'Contact update failed', detail: contactResult });
+      const updated = await updateResp.json();
+      if (!updateResp.ok) return res.status(502).json({ error: 'Contact update failed', detail: updated });
+      contactResult = updated;
     }
 
-    // --- 5) Assign tags (always add even if contact existed) ---
+    // --- 5) Assign tags ---
     for (const id of tagIds) {
       await fetch(`${base}/contacts/${contactId}/tags`, {
         method: 'POST',
