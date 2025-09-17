@@ -99,12 +99,12 @@ export default async function handler(req, res) {
 
     // 3) Create or update the contact - CORRECTED FIELD NAMES
     const contactBody = {
-  email,
-  firstName: first_name || '', // camelCase
-  language: 'en',
-  fields: [{ slug: 'score', value: String(score || '') }],
-  tagIds: tagIds // camelCase
-};
+      email,
+      first_name: first_name || '',
+      language: 'en',
+      custom_fields: [{ slug: 'score', value: String(score || '') }],
+      tag_ids: tagIds
+    };
     console.log('Contact body to send:', contactBody); // Debug logging
 
     const contactResp = await fetch(`${base}/contacts`, {
