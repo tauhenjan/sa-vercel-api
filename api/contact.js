@@ -1,12 +1,5 @@
 /**
- * api/contact.js - final update
- * - Ensures first name is saved for both new and existing contacts
- * - Stores score (fields.slug = "score")
- * - Ensures tags exist and assigns them
- * - Returns the updated contact (after tags)
- *
- * Expects POST JSON:
- * { "email": "...", "first_name": "...", "score": "...", "tagNames": ["sadone","saresult2"] }
+ * api/contact.js - with console.log() debugging
  */
 
 function parseJsonBody(req) {
@@ -30,8 +23,9 @@ export default async function handler(req, res) {
 
   try {
     const payload = await parseJsonBody(req);
-    const { email, first_name, score, tagNames } = payload || {};
+    console.log('🔵 Incoming payload:', JSON.stringify(payload, null, 2));
 
+    const { email, first_name, score, tagNames } = payload || {};
     if (!email) return res.status(400).json({ error: 'Missing email' });
 
     const apiKey = process.env.SYSTEME_API_KEY;
@@ -39,26 +33,27 @@ export default async function handler(req, res) {
 
     const base = 'https://api.systeme.io/api';
 
-    // 1) Fetch all tags (to get ids)
+    // 1) Fetch tags
     const tagsResp = await fetch(`${base}/tags`, { headers: { 'X-API-Key': apiKey } });
     const tagsJson = await tagsResp.json();
-    if (!tagsResp.ok) return res.status(502).json({ error: 'Failed to fetch tags', detail: tagsJson });
+    console.log('🔵 Fetched tags count:', tagsJson.items?.length || 0);
 
     const tagsMap = {};
     (tagsJson.items || []).forEach(t => { if (t && t.name) tagsMap[t.name] = t.id; });
 
-    // 2) Ensure requested tag IDs exist (create missing tags)
+    // 2) Ensure requested tag IDs exist
     const tagIds = [];
     for (const name of (tagNames || [])) {
       if (!name) continue;
       if (tagsMap[name]) { tagIds.push(tagsMap[name]); continue; }
-
+      console.log(`🟠 Creating missing tag: ${name}`);
       const createTagResp = await fetch(`${base}/tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify({ name })
       });
       const created = await createTagResp.json();
+      console.log('🔵 Tag creation result:', created);
       if (createTagResp.ok && created && created.id) {
         tagIds.push(created.id);
         tagsMap[name] = created.id;
@@ -66,40 +61,35 @@ export default async function handler(req, res) {
         return res.status(502).json({ error: 'Unable to create tag', name, detail: created });
       }
     }
+    console.log('✅ Final tagIds to attach:', tagIds);
 
-    // 3) Check if contact exists (search by email)
+    // 3) Check if contact exists
     const searchResp = await fetch(`${base}/contacts?email=${encodeURIComponent(email)}`, {
       headers: { 'X-API-Key': apiKey }
     });
     const searchJson = await searchResp.json();
-    if (!searchResp.ok) return res.status(502).json({ error: 'Failed to search contact', detail: searchJson });
+    console.log('🔵 Search result count:', searchJson.items?.length || 0);
 
     let contactId = null;
     if (Array.isArray(searchJson.items) && searchJson.items.length > 0) {
       contactId = searchJson.items[0].id;
+      console.log('🔵 Existing contact ID:', contactId);
     }
 
     let contactResult = null;
-
-    // 4) Create or update contact
     const fieldsArray = [];
-    // Ensure first_name is written as a custom field (slug 'first_name')
-    if (typeof first_name !== 'undefined') {
+    if (typeof first_name !== 'undefined')
       fieldsArray.push({ slug: 'first_name', value: String(first_name || '') });
-    }
-    // Ensure score is written as a custom field (slug 'score')
-    if (typeof score !== 'undefined') {
+    if (typeof score !== 'undefined')
       fieldsArray.push({ slug: 'score', value: String(score || '') });
-    }
 
     if (!contactId) {
-      // Create
+      console.log('🟢 Creating new contact...');
       const createBody = {
         email,
         locale: 'en',
         fields: fieldsArray
       };
-      // Also include top-level first_name just in case (safe)
       if (typeof first_name !== 'undefined') createBody.first_name = first_name || '';
 
       const createResp = await fetch(`${base}/contacts`, {
@@ -108,13 +98,13 @@ export default async function handler(req, res) {
         body: JSON.stringify(createBody)
       });
       const created = await createResp.json();
+      console.log('🔵 Create contact response:', created);
       if (!createResp.ok) return res.status(502).json({ error: 'Contact creation failed', detail: created });
       contactResult = created;
       contactId = created.id;
     } else {
-      // Update existing contact — must use merge-patch content type for PATCH
+      console.log('🟡 Updating existing contact...');
       const updateBody = { fields: fieldsArray };
-      // some clients also accept first_name top-level, but fields with slug is reliable
       if (typeof first_name !== 'undefined') updateBody.first_name = first_name || '';
 
       const updateResp = await fetch(`${base}/contacts/${contactId}`, {
@@ -123,12 +113,14 @@ export default async function handler(req, res) {
         body: JSON.stringify(updateBody)
       });
       const updated = await updateResp.json();
+      console.log('🔵 Update contact response:', updated);
       if (!updateResp.ok) return res.status(502).json({ error: 'Contact update failed', detail: updated });
       contactResult = updated;
     }
 
-    // 5) Assign all requested tags (POST contacts/{id}/tags : { tagId: id })
+    // 5) Assign tags
     for (const id of tagIds) {
+      console.log(`🔵 Assigning tagId ${id} to contactId ${contactId}`);
       await fetch(`${base}/contacts/${contactId}/tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
@@ -136,17 +128,17 @@ export default async function handler(req, res) {
       });
     }
 
-    // 6) Fetch updated contact (so response reflects newly added tags + fields)
+    // 6) Fetch updated contact (to confirm)
     const finalResp = await fetch(`${base}/contacts/${contactId}`, {
       headers: { 'X-API-Key': apiKey }
     });
     const finalJson = await finalResp.json();
-    if (!finalResp.ok) return res.status(502).json({ error: 'Failed to fetch updated contact', detail: finalJson });
+    console.log('✅ Final contact object:', finalJson);
 
     return res.status(200).json({ success: true, contact: finalJson, tagIds });
 
   } catch (err) {
-    console.error('Server error', err);
+    console.error('❌ Server error', err);
     return res.status(500).json({ error: 'Server error', detail: String(err) });
   }
 }
