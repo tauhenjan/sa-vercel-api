@@ -1,20 +1,14 @@
 /**
  * Vercel Serverless function: api/contact.js
- * - Accepts POST JSON: { email, first_name, score, tagNames: [...] }
- * - Ensures tags exist in Systeme.io (creates missing ones)
- * - Creates/updates contact with score stored as a field and adds tags
- *
- * IMPORTANT: Add your Systeme.io Public API key to Vercel env var named: SYSTEME_API_KEY
+ * Safely creates or updates a Systeme.io contact, stores score, and assigns tags.
+ * Accepts POST JSON: { email, first_name, score, tagNames: [ "sadone", "saresult2" ] }
  */
 
 function parseJsonBody(req) {
-  // If req.body already exists (Next.js/Vercel will sometimes parse it) return it.
   if (req && req.body && Object.keys(req.body).length) return req.body;
-
-  // Otherwise parse manually (robust for raw Node requests)
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('data', chunk => (body += chunk.toString()));
     req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -34,100 +28,102 @@ export default async function handler(req, res) {
 
   try {
     const payload = await parseJsonBody(req);
-    console.log('Received payload:', payload); // Debug logging
-    
     const { email, first_name, score, tagNames } = payload || {};
 
     if (!email) return res.status(400).json({ error: 'Missing email' });
 
     const apiKey = process.env.SYSTEME_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'Server missing SYSTEME_API_KEY env var' });
+    if (!apiKey) return res.status(500).json({ error: 'Missing SYSTEME_API_KEY' });
 
     const base = 'https://api.systeme.io/api';
 
-    // 1) Fetch existing tags
+    // --- 1) Fetch existing tags ---
     const tagsResp = await fetch(`${base}/tags`, { headers: { 'X-API-Key': apiKey } });
-
-    if (!tagsResp.ok) {
-      const txt = await tagsResp.text();
-      console.error('Failed to fetch tags', tagsResp.status, txt);
-      return res.status(502).json({ error: 'Failed to fetch tags from Systeme.io', detail: txt });
-    }
-
     const tagsJson = await tagsResp.json();
+    if (!tagsResp.ok) return res.status(502).json({ error: 'Failed to fetch tags', detail: tagsJson });
+
     const tagsMap = {};
+    (tagsJson.items || []).forEach(t => {
+      if (t && t.name) tagsMap[t.name] = t.id;
+    });
 
-    if (Array.isArray(tagsJson.items)) {
-      tagsJson.items.forEach(t => { if (t && t.name) tagsMap[t.name] = t.id; });
-    }
-
-    console.log('Existing tags map:', tagsMap); // Debug logging
-
-    // 2) Ensure tag IDs exist (create missing)
+    // --- 2) Ensure tag IDs exist (create missing) ---
     const tagIds = [];
-
-    for (const name of (tagNames || [])) {
+    for (const name of tagNames || []) {
       if (!name) continue;
-
       if (tagsMap[name]) {
         tagIds.push(tagsMap[name]);
-        console.log(`Found existing tag: ${name} with ID: ${tagsMap[name]}`);
         continue;
       }
-
-      // Create the tag
-      console.log(`Creating new tag: ${name}`);
       const createTagResp = await fetch(`${base}/tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify({ name })
       });
-
       const created = await createTagResp.json();
-
-      if (createTagResp.ok && created && created.id) {
+      if (createTagResp.ok && created.id) {
         tagIds.push(created.id);
         tagsMap[name] = created.id;
-        console.log(`Successfully created tag: ${name} with ID: ${created.id}`);
       } else {
-        console.error('Unable to create tag', name, created);
         return res.status(502).json({ error: 'Unable to create tag', name, detail: created });
       }
     }
 
-    console.log('Final tag IDs to assign:', tagIds);
-
-    // 3) Create or update the contact - CORRECTED FIELD NAMES
-    const contactBody = {
-      email,
-      first_name: first_name || '', // camelCase
-      language: 'en',
-      fields: [{ slug: 'first_name', value: String(firstName || '') }],
-      fields: [{ slug: 'score', value: String(score || '') }],
-      tagIds: tagIds // camelCase
-    };
-    console.log('Contact body to send:', contactBody); // Debug logging
-
-    const contactResp = await fetch(`${base}/contacts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-      body: JSON.stringify(contactBody)
+    // --- 3) Check if contact already exists ---
+    const searchResp = await fetch(`${base}/contacts?email=${encodeURIComponent(email)}`, {
+      headers: { 'X-API-Key': apiKey }
     });
+    const searchJson = await searchResp.json();
 
-    const contactJson = await contactResp.text();
-
-    if (!contactResp.ok) {
-      console.error('Contact create/update failed', contactResp.status, contactJson);
-      return res.status(502).json({ error: 'Failed to create/update contact', detail: contactJson });
+    let contactId = null;
+    if (searchResp.ok && Array.isArray(searchJson.items) && searchJson.items.length > 0) {
+      contactId = searchJson.items[0].id;
     }
 
-    console.log('Successfully created/updated contact'); // Debug logging
+    // --- 4) Create or update contact ---
+    let contactResult = null;
+    if (!contactId) {
+      // CREATE new contact
+      const createResp = await fetch(`${base}/contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({
+          email,
+          first_name: first_name || '',
+          language: 'en',
+          fields: [{ slug: 'score', value: String(score || '') }]
+        })
+      });
+      const created = await createResp.json();
+      if (!createResp.ok) return res.status(502).json({ error: 'Contact creation failed', detail: created });
+      contactResult = created;
+      contactId = created.id;
+    } else {
+      // UPDATE existing contact
+      const updateResp = await fetch(`${base}/contacts/${contactId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({
+          first_name: first_name || '',
+          fields: [{ slug: 'score', value: String(score || '') }]
+        })
+      });
+      contactResult = await updateResp.json();
+      if (!updateResp.ok) return res.status(502).json({ error: 'Contact update failed', detail: contactResult });
+    }
 
-    // All good
-    res.status(200).json({ success: true, detail: JSON.parse(contactJson) });
+    // --- 5) Assign tags (always add even if contact existed) ---
+    for (const id of tagIds) {
+      await fetch(`${base}/contacts/${contactId}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ tagId: id })
+      });
+    }
 
+    return res.status(200).json({ success: true, contact: contactResult, tagIds });
   } catch (err) {
-    console.error('Server error', String(err));
+    console.error('Server error', err);
     res.status(500).json({ error: 'Server error', detail: String(err) });
   }
 }
