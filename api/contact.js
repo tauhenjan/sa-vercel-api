@@ -1,5 +1,3 @@
-const fetch = require("node-fetch");
-
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -32,7 +30,10 @@ module.exports = async function handler(req, res) {
     const contactData = await createResp.json();
 
     if (!contactData.id && !contactData.contact?.id) {
-      return res.status(500).json({ error: "Failed to create or update contact", detail: contactData });
+      return res.status(500).json({
+        error: "Failed to create or update contact",
+        detail: contactData,
+      });
     }
 
     const contactId = contactData.id || contactData.contact.id;
@@ -72,6 +73,8 @@ module.exports = async function handler(req, res) {
     });
   } catch (error) {
     console.error("Server error:", error);
-    return res.status(500).json({ error: "Internal server error", detail: error.message });
+    return res
+      .status(500)
+      .json({ error: "Internal server error", detail: error.message });
   }
 };
