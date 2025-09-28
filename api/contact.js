@@ -10,7 +10,7 @@ module.exports = async function handler(req, res) {
   }
 
   const apiKey = process.env.SYSTEME_API_KEY;
-  const baseUrl = "https://api.systeme.io/api/v1";
+  const baseUrl = "https://api.systeme.io";
 
   try {
     // 1. Create or update contact
@@ -27,28 +27,18 @@ module.exports = async function handler(req, res) {
       }),
     });
 
-    let bodyText = await createResp.text();
-    let contactData;
+    const createData = await createResp.json();
 
-    try {
-      contactData = JSON.parse(bodyText);
-    } catch (err) {
-      return res.status(500).json({
-        error: "Systeme.io did not return JSON",
-        detail: bodyText,
-      });
-    }
-
-    if (!contactData.id && !contactData.contact?.id) {
+    if (!createData.id && !createData.contact?.id) {
       return res.status(500).json({
         error: "Failed to create or update contact",
-        detail: contactData,
+        detail: createData,
       });
     }
 
-    const contactId = contactData.id || contactData.contact.id;
+    const contactId = createData.id || createData.contact.id;
 
-    // 2. Update score explicitly (PATCH ensures overwrite)
+    // 2. Explicitly update score (PATCH)
     await fetch(`${baseUrl}/contacts/${contactId}`, {
       method: "PATCH",
       headers: {
@@ -76,14 +66,7 @@ module.exports = async function handler(req, res) {
             },
             body: JSON.stringify({ tagId }),
           });
-          let tagBody = await resp.text();
-          let data;
-          try {
-            data = JSON.parse(tagBody);
-          } catch (err) {
-            tagErrors.push({ tagId, detail: tagBody });
-            continue;
-          }
+          const data = await resp.json();
           if (data.id) {
             assignedTagIds.push(data.id);
           } else {
@@ -97,7 +80,7 @@ module.exports = async function handler(req, res) {
 
     return res.json({
       success: true,
-      contact: contactData.contact || contactData,
+      contact: createData.contact || createData,
       assignedTagIds,
       tagErrors,
     });
