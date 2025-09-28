@@ -1,205 +1,144 @@
 // api/contact.js
-// Vercel Serverless function to create/update a contact in systeme.io, update 'score' field and assign tags.
-// Requires env var SYSTEME_API_KEY set in Vercel project settings.
+// Vercel Serverless function: robust create/update contact, ensure score & first_name, ensure tags
+// Requirements: set SYSTEME_API_KEY in Vercel Environment Variables
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method Not Allowed - use POST' });
-    }
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed. Use POST.' });
 
     const SYS_KEY = process.env.SYSTEME_API_KEY;
     if (!SYS_KEY) return res.status(500).json({ error: 'Server misconfigured: SYSTEME_API_KEY missing' });
 
-    const base = 'https://api.systeme.io/api';
+    const BASE = 'https://api.systeme.io/api';
 
-    // === Parse incoming body (be forgiving) ===
-    const body = (typeof req.body === 'object') ? req.body : JSON.parse(req.body || '{}');
+    // --- helper to call systeme.io and return parsed JSON if possible ---
+    async function apiFetch(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {}, { 'X-API-Key': SYS_KEY });
+      const fetchOpts = Object.assign({}, opts, { headers });
+      const r = await fetch(`${BASE}${path}`, fetchOpts);
+      const text = await r.text().catch(() => null);
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch(e) { json = text; }
+      return { ok: r.ok, status: r.status, json, raw: text, res: r };
+    }
+
+    // --- parse incoming body flexibly ---
+    const body = (typeof req.body === 'object' && req.body) ? req.body : JSON.parse(req.body || '{}');
 
     const emailRaw = (body.email || body.emailAddress || body.email_address || '').toString().trim();
     if (!emailRaw) return res.status(400).json({ error: 'email required in payload' });
     const email = emailRaw.toLowerCase();
 
-    const firstName = (body.firstName || body.first_name || body.firstname || body.first || '').toString().trim() || undefined;
-    // Score: try to parse to integer-ish string; allow "85", 85, "85.0"
-    let scoreRaw = body.score ?? body.Score ?? body.sov_score ?? null;
+    const first_name = (body.first_name || body.firstName || body.firstname || body.first || '').toString().trim() || null;
+
+    let scoreRaw = body.score ?? body.Score ?? null;
     if (scoreRaw !== null && scoreRaw !== undefined) {
-      scoreRaw = String(scoreRaw).trim();
-      // extract digits / optional decimal; prefer integer
-      const m = scoreRaw.match(/-?\d+/);
-      scoreRaw = m ? String(parseInt(m[0], 10)) : String(scoreRaw);
+      const s = String(scoreRaw).trim();
+      const m = s.match(/-?\d+/);
+      scoreRaw = m ? String(parseInt(m[0], 10)) : s;
     } else {
       scoreRaw = null;
     }
 
-    // Tags: accept tagNames: ["sadone","saresult2"] OR tagIds: [123,456] OR tagNames string
-    const incomingTagNames = Array.isArray(body.tagNames) ? body.tagNames.map(String) :
-                             typeof body.tagNames === 'string' ? [body.tagNames] : [];
-    const incomingTagIds = Array.isArray(body.tagIds) ? body.tagIds.map(x => Number(x)) : [];
+    // incoming tags: prefer tagNames (strings), accept tagIds array too
+    const incomingTagNames = Array.isArray(body.tagNames) ? body.tagNames.map(String) : (typeof body.tagNames === 'string' ? [body.tagNames] : []);
+    const incomingTagIds = Array.isArray(body.tagIds) ? body.tagIds.map(n => Number(n)) : [];
 
-    // Always ensure 'sadone' is present as a name in tag list (user requested this)
-    if (!incomingTagNames.map(n => n.toLowerCase()).includes('sadone')) incomingTagNames.unshift('sadone');
+    // ensure 'sadone' is always present as requested
+    if (!incomingTagNames.map(n => (n||'').toLowerCase()).includes('sadone')) incomingTagNames.unshift('sadone');
 
-    // Helper: low-level fetch
-    async function apiFetch(path, opts = {}) {
-      const h = Object.assign({}, opts.headers || {}, { 'X-API-Key': SYS_KEY });
-      const fetchOpts = Object.assign({}, opts, { headers: h });
-      const r = await fetch(`${base}${path}`, fetchOpts);
-      let text;
-      try { text = await r.text(); } catch(e) { text = null; }
-      let json = null;
-      try { json = text ? JSON.parse(text) : null; } catch(e) { json = text; }
-      return { ok: r.ok, status: r.status, json, raw: text, resObj: r };
-    }
-
-    // 1) Find existing contact by email
+    // --- 1) Search for contact by email ---
     const search = await apiFetch(`/contacts?email=${encodeURIComponent(email)}`, { method: 'GET' });
     if (!search.ok && search.status !== 404) {
-      // tolerate a 404 as "not found", otherwise error
-      // return error details for debugging
       return res.status(500).json({ error: 'Failed searching contacts', detail: search.json || search.raw });
     }
 
-    let contact = (Array.isArray(search.json?.items) && search.json.items.length) ? search.json.items[0] : null;
+    let contact = Array.isArray(search.json?.items) && search.json.items.length ? search.json.items[0] : null;
+    let contactId = contact ? contact.id : null;
 
-    // 2) Create if missing
-    if (!contact) {
-      const createBody = {
-        email,
-      };
-      if (firstName) createBody.first_name = firstName;
+    // --- 2) Create contact if not found ---
+    if (!contactId) {
+      const createBody = { email };
+      if (first_name) createBody.first_name = first_name;
       if (scoreRaw !== null) createBody.fields = [{ slug: 'score', value: String(scoreRaw) }];
       const createResp = await apiFetch('/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(createBody)
       });
-      if (!createResp.ok) {
-        return res.status(500).json({ error: 'Failed to create contact', detail: createResp.json || createResp.raw });
-      }
+      if (!createResp.ok) return res.status(500).json({ error: 'Contact creation failed', detail: createResp.json || createResp.raw });
       contact = createResp.json;
+      contactId = contact.id;
     } else {
-      // 3) Update existing contact: try PATCH (merge-patch)
-      const patchBody = {};
-      if (firstName) patchBody.first_name = firstName;
-      if (scoreRaw !== null) patchBody.fields = [{ slug: 'score', value: String(scoreRaw) }];
-
-      // Only call PATCH if there is something to update (name or score)
-      if (Object.keys(patchBody).length) {
-        const patchResp = await apiFetch(`/contacts/${contact.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/merge-patch+json' },
-          body: JSON.stringify(patchBody)
-        });
-
-        // If the PATCH failed or the field didn't change, we'll fetch and try a fallback below
-        if (!patchResp.ok) {
-          // continue to fallback logic (we won't abort yet)
-        }
-      }
-
-      // fetch fresh contact after patch attempt
-      const fresh = await apiFetch(`/contacts/${contact.id}`, { method: 'GET' });
-      if (fresh.ok && fresh.json) contact = fresh.json;
+      // for existing contact: ensure we have the full contact record (with tags & fields)
+      const full = await apiFetch(`/contacts/${contactId}`, { method: 'GET' });
+      contact = full.ok ? full.json : contact;
     }
 
-    // 4) Ensure score actually updated (robustness fallback)
-    // If we have desired score and contact.fields does not include it, try clearing then setting (some users reported inconsistent behavior)
+    // --- 3) Update first_name and score if needed (PATCH using merge-patch) ---
+    // Build patch body if any change needed
+    const patchBody = {};
+    if (first_name) patchBody.first_name = first_name;
+    if (scoreRaw !== null) patchBody.fields = [{ slug: 'score', value: String(scoreRaw) }];
+
+    if (Object.keys(patchBody).length) {
+      // Always include slug 'first_name' in fields as well to keep custom field in sync
+      if (first_name) {
+        patchBody.fields = patchBody.fields || [];
+        // ensure first_name slug present
+        const hasFirstSlug = patchBody.fields.some(f => f.slug === 'first_name');
+        if (!hasFirstSlug) patchBody.fields.push({ slug: 'first_name', value: String(first_name) });
+      }
+
+      const patchResp = await apiFetch(`/contacts/${contactId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/merge-patch+json' },
+        body: JSON.stringify(patchBody)
+      });
+      // If patch failed, we will attempt a safer approach below; but don't abort now
+    }
+
+    // Re-fetch contact to inspect fields & tags freshly
+    let freshContactResp = await apiFetch(`/contacts/${contactId}`, { method: 'GET' });
+    if (freshContactResp.ok && freshContactResp.json) contact = freshContactResp.json;
+
+    // --- 4) Ensure score really updated (fallback clear+set if value differs) ---
     if (scoreRaw !== null) {
-      const existingScoreField = Array.isArray(contact.fields) ? contact.fields.find(f => f.slug === 'score') : null;
-      const existingScoreValue = existingScoreField ? String(existingScoreField.value ?? '') : '';
-      if (String(existingScoreValue) !== String(scoreRaw)) {
-        // Try clearing first
-        await apiFetch(`/contacts/${contact.id}`, {
+      const scoreField = Array.isArray(contact.fields) ? contact.fields.find(f => f.slug === 'score') : null;
+      const existingScore = scoreField ? String(scoreField.value ?? '') : '';
+      if (String(existingScore) !== String(scoreRaw)) {
+        // clear then set
+        await apiFetch(`/contacts/${contactId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/merge-patch+json' },
           body: JSON.stringify({ fields: [{ slug: 'score', value: null }] })
-        });
-        // small delay to give Systeme a moment (rare race)
-        await new Promise(r => setTimeout(r, 400));
-        // set value again
-        const setResp = await apiFetch(`/contacts/${contact.id}`, {
+        }).catch(()=>{});
+        await new Promise(r=>setTimeout(r, 400));
+        const setResp = await apiFetch(`/contacts/${contactId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/merge-patch+json' },
           body: JSON.stringify({ fields: [{ slug: 'score', value: String(scoreRaw) }] })
-        });
-        if (!setResp.ok) {
-          // not fatal — include detail in response
-        }
-        // refresh contact
-        const refreshed = await apiFetch(`/contacts/${contact.id}`, { method: 'GET' });
+        }).catch(()=>{});
+        // refresh
+        const refreshed = await apiFetch(`/contacts/${contactId}`, { method: 'GET' });
         if (refreshed.ok && refreshed.json) contact = refreshed.json;
       }
     }
 
-    // 5) Prepare tag IDs to assign:
-    // - existing numeric tagIds passed in are honored
-    // - incomingTagNames (strings) will be resolved to tag IDs (create tag if missing)
-    // Get current tag list (server-side) - attempt to fetch tags list once to match names
-    const allTagsResp = await apiFetch('/tags?limit=500', { method: 'GET' });
-    let tagNameToId = {};
-    if (allTagsResp.ok && Array.isArray(allTagsResp.json?.items)) {
-      for (const t of allTagsResp.json.items) tagNameToId[t.name.toLowerCase()] = Number(t.id);
-    }
-
-    const wantedTagIds = new Set((incomingTagIds || []).filter(n => !!n).map(n => Number(n)));
-
-    for (const tnameRaw of incomingTagNames) {
-      const tname = String(tnameRaw || '').trim();
-      if (!tname) continue;
-      const lower = tname.toLowerCase();
-      if (tagNameToId[lower]) {
-        wantedTagIds.add(tagNameToId[lower]);
-      } else {
-        // create tag
-        const createTagResp = await apiFetch('/tags', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: tname })
-        });
-        if (createTagResp.ok && createTagResp.json && createTagResp.json.id) {
-          const tid = Number(createTagResp.json.id);
-          wantedTagIds.add(tid);
-          tagNameToId[lower] = tid;
-        } else {
-          // skip if tag creation failed (we'll include errors later)
-        }
+    // Also ensure first_name top-level is in sync (some UI reads top-level)
+    if (first_name) {
+      const topFirst = (contact.first_name || contact.firstName || '') || '';
+      const fieldFirst = (Array.isArray(contact.fields) && contact.fields.find(f=>f.slug==='first_name')?.value) || '';
+      if (String(topFirst).trim() !== String(first_name).trim() || String(fieldFirst).trim() !== String(first_name).trim()) {
+        await apiFetch(`/contacts/${contactId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/merge-patch+json' },
+          body: JSON.stringify({ first_name: String(first_name), fields: [{ slug: 'first_name', value: String(first_name) }] })
+        }).catch(()=>{});
+        const ref2 = await apiFetch(`/contacts/${contactId}`, { method: 'GET' });
+        if (ref2.ok && ref2.json) contact = ref2.json;
       }
     }
 
-    // 6) Assign missing tags to contact
-    const contactTagIds = new Set(Array.isArray(contact.tags) ? contact.tags.map(t => Number(t.id)) : []);
-    const toAssign = [];
-    for (const tid of Array.from(wantedTagIds)) {
-      if (!contactTagIds.has(tid)) toAssign.push(tid);
-    }
-
-    const assigned = [];
-    const tagErrors = [];
-    for (const tid of toAssign) {
-      const addResp = await apiFetch(`/contacts/${contact.id}/tags`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tagId: Number(tid) })
-      });
-      if (addResp.ok) assigned.push(tid);
-      else tagErrors.push({ tagId: tid, status: addResp.status, detail: addResp.json || addResp.raw });
-    }
-
-    // final fetch to return canonical contact state
-    const finalContactResp = await apiFetch(`/contacts/${contact.id}`, { method: 'GET' });
-    const finalContact = finalContactResp.ok ? finalContactResp.json : contact;
-
-    // 7) Done — return helpful debug info
-    return res.status(200).json({
-      success: true,
-      contact: finalContact,
-      assignedTagIds: assigned,
-      tagErrors,
-    });
-
-  } catch (err) {
-    console.error('contact-api error', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'internal_server_error', detail: String(err && err.message ? err.message : err) });
-  }
-}
+    // --- 5) Resolve tag names -> ids (create missing tags) ---
+    const allT
