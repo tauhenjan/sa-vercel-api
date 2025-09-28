@@ -1,3 +1,5 @@
+const fetch = require("node-fetch");
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -13,53 +15,29 @@ module.exports = async function handler(req, res) {
   const baseUrl = "https://api.systeme.io";
 
   try {
-    // Step 1: Find or create contact
-    let contact = null;
-    let contactId = null;
-
-    // Try to find existing contact
-    const findResp = await fetch(`${baseUrl}/contacts?email=${encodeURIComponent(email)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    // 1. Create or update contact (POST /contacts is idempotent in Systeme.io)
+    const createResp = await fetch(`${baseUrl}/contacts`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        firstName: first_name,
+        fields: [{ slug: "score", value: score }],
+      }),
     });
-    const findData = await findResp.json();
-    if (findData && findData.data && findData.data.length > 0) {
-      contact = findData.data[0];
-      contactId = contact.id;
+
+    const contactData = await createResp.json();
+
+    if (!contactData.id && !contactData.contact?.id) {
+      return res.status(500).json({ error: "Failed to create or update contact", detail: contactData });
     }
 
-    if (!contactId) {
-      // Create new contact
-      const createResp = await fetch(`${baseUrl}/contacts`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email,
-          firstName: first_name,
-          fields: [{ slug: "score", value: score }],
-        }),
-      });
-      const createData = await createResp.json();
-      contactId = createData.id;
-      contact = createData;
-    } else {
-      // Update existing contact (PATCH)
-      await fetch(`${baseUrl}/contacts/${contactId}`, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/merge-patch+json",
-        },
-        body: JSON.stringify({
-          firstName: first_name,
-          fields: [{ slug: "score", value: score }],
-        }),
-      });
-    }
+    const contactId = contactData.id || contactData.contact.id;
 
-    // Step 2: Add tags
+    // 2. Add tags
     let assignedTagIds = [];
     let tagErrors = [];
 
@@ -88,12 +66,12 @@ module.exports = async function handler(req, res) {
 
     return res.json({
       success: true,
-      contact,
+      contact: contactData.contact || contactData,
       assignedTagIds,
       tagErrors,
     });
   } catch (error) {
     console.error("Server error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error", detail: error.message });
   }
 };
