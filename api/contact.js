@@ -27,25 +27,28 @@ module.exports = async function handler(req, res) {
       }),
     });
 
+    let bodyText = await createResp.text();
     let contactData;
+
     try {
-      contactData = await createResp.json();
+      contactData = JSON.parse(bodyText);
     } catch (err) {
-      const text = await createResp.text();
-      return res
-        .status(500)
-        .json({ error: "Systeme.io did not return JSON", detail: text });
+      return res.status(500).json({
+        error: "Systeme.io did not return JSON",
+        detail: bodyText,
+      });
     }
 
     if (!contactData.id && !contactData.contact?.id) {
-      return res
-        .status(500)
-        .json({ error: "Failed to create or update contact", detail: contactData });
+      return res.status(500).json({
+        error: "Failed to create or update contact",
+        detail: contactData,
+      });
     }
 
     const contactId = contactData.id || contactData.contact.id;
 
-    // 2. Update score explicitly (PATCH ensures overwriting)
+    // 2. Update score explicitly (PATCH ensures overwrite)
     await fetch(`${baseUrl}/contacts/${contactId}`, {
       method: "PATCH",
       headers: {
@@ -73,7 +76,14 @@ module.exports = async function handler(req, res) {
             },
             body: JSON.stringify({ tagId }),
           });
-          const data = await resp.json();
+          let tagBody = await resp.text();
+          let data;
+          try {
+            data = JSON.parse(tagBody);
+          } catch (err) {
+            tagErrors.push({ tagId, detail: tagBody });
+            continue;
+          }
           if (data.id) {
             assignedTagIds.push(data.id);
           } else {
