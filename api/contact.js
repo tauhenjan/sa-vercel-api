@@ -3,7 +3,7 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { email, first_name, score, tagNames } = req.body;
+  const { email, first_name, score, tagIds } = req.body;
 
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
@@ -13,7 +13,7 @@ module.exports = async function handler(req, res) {
   const baseUrl = "https://api.systeme.io";
 
   try {
-    // 1. Create or update contact (POST /contacts is idempotent in Systeme.io)
+    // 1. Create or update contact
     const createResp = await fetch(`${baseUrl}/contacts`, {
       method: "POST",
       headers: {
@@ -27,23 +27,43 @@ module.exports = async function handler(req, res) {
       }),
     });
 
-    const contactData = await createResp.json();
+    let contactData;
+    try {
+      contactData = await createResp.json();
+    } catch (err) {
+      const text = await createResp.text();
+      return res
+        .status(500)
+        .json({ error: "Systeme.io did not return JSON", detail: text });
+    }
 
     if (!contactData.id && !contactData.contact?.id) {
-      return res.status(500).json({
-        error: "Failed to create or update contact",
-        detail: contactData,
-      });
+      return res
+        .status(500)
+        .json({ error: "Failed to create or update contact", detail: contactData });
     }
 
     const contactId = contactData.id || contactData.contact.id;
 
-    // 2. Add tags
+    // 2. Update score explicitly (PATCH ensures overwriting)
+    await fetch(`${baseUrl}/contacts/${contactId}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/merge-patch+json",
+      },
+      body: JSON.stringify({
+        firstName: first_name,
+        fields: [{ slug: "score", value: score }],
+      }),
+    });
+
+    // 3. Add tags
     let assignedTagIds = [];
     let tagErrors = [];
 
-    if (tagNames && tagNames.length > 0) {
-      for (const tag of tagNames) {
+    if (tagIds && tagIds.length > 0) {
+      for (const tagId of tagIds) {
         try {
           const resp = await fetch(`${baseUrl}/contacts/${contactId}/tags`, {
             method: "POST",
@@ -51,16 +71,16 @@ module.exports = async function handler(req, res) {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ tagName: tag }),
+            body: JSON.stringify({ tagId }),
           });
           const data = await resp.json();
           if (data.id) {
             assignedTagIds.push(data.id);
           } else {
-            tagErrors.push({ tag, detail: data });
+            tagErrors.push({ tagId, detail: data });
           }
         } catch (err) {
-          tagErrors.push({ tag, detail: err.message });
+          tagErrors.push({ tagId, detail: err.message });
         }
       }
     }
