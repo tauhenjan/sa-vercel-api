@@ -10,7 +10,7 @@ module.exports = async function handler(req, res) {
   }
 
   const apiKey = process.env.SYSTEME_API_KEY;
-  const baseUrl = "https://api.systeme.io";
+  const baseUrl = "https://api.systeme.io/api/v1";
 
   try {
     // 1. Create or update contact
