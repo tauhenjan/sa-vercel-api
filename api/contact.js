@@ -1,194 +1,74 @@
 // api/contact.js
-module.exports = async function handler(req, res) {
-  const DEBUG = process.env.DEBUG === "1";
-  const apiKey = process.env.SYSTEME_API_KEY;
 
-  function dbg(...args) {
-    if (DEBUG) console.log(...args);
+module.exports = async function handler(req, res) {
+  const apiKey = process.env.SYSTEME_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: "Missing SYSTEME_API_KEY" });
   }
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
-  if (!apiKey) {
-    return res.status(500).json({ error: "Missing SYSTEME_API_KEY in env" });
-  }
 
   const baseUrl = "https://api.systeme.io/api";
-  const body = req.body || {};
-  let { email, first_name, score, tagNames } = body;
-
-  email = (email || "").toString().trim().toLowerCase();
-  first_name = first_name ? String(first_name).trim() : "";
-  score = score != null ? String(score).trim() : null;
-
+  const { email, first_name, score, tagNames = [] } = req.body || {};
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
 
-  if (!tagNames) tagNames = [];
-  if (!Array.isArray(tagNames)) tagNames = [String(tagNames)];
-  tagNames = tagNames.map(t => (t || "").toString().trim()).filter(Boolean);
-
-  // Always ensure "sadone" is present
-  if (!tagNames.map(t => t.toLowerCase()).includes("sadone")) {
-    tagNames.unshift("sadone");
-  }
-
-  // Deduplicate
-  const seen = new Set();
-  tagNames = tagNames.filter(t => {
-    const key = t.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  dbg("incoming:", { email, first_name, score, tagNames });
-
+  // ---- Helper: fetch wrapper
   async function sysFetch(path, opts = {}) {
-    const url = `${baseUrl}${path}`;
-    const headers = Object.assign({}, opts.headers || {}, {
-      "X-API-Key": apiKey,
+    const resp = await fetch(`${baseUrl}${path}`, {
+      ...opts,
+      headers: {
+        ...(opts.headers || {}),
+        "X-API-Key": apiKey,
+        "Content-Type": opts.body ? opts.headers?.["Content-Type"] || "application/json" : undefined,
+      },
     });
-    const finalOpts = Object.assign({}, opts, { headers });
-
-    dbg("sysFetch:", finalOpts.method || "GET", url);
-    const resp = await fetch(url, finalOpts);
     const text = await resp.text();
-    let json;
     try {
-      json = text ? JSON.parse(text) : null;
+      return { ok: resp.ok, status: resp.status, json: JSON.parse(text) };
     } catch {
-      return { ok: resp.ok, status: resp.status, text, json: null };
+      return { ok: resp.ok, status: resp.status, text };
     }
-    return { ok: resp.ok, status: resp.status, text, json };
   }
 
   try {
-    // 1) Find existing contact
+    // 1. Find existing contact
     let contactId = null;
-    let contact = null;
     const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
-    if (findResp.ok && findResp.json) {
-      const items = findResp.json.items || findResp.json.data || findResp.json;
-      if (Array.isArray(items) && items.length > 0) {
-        contact = items[0];
-        contactId = contact.id;
-      }
+    if (findResp.ok && Array.isArray(findResp.json?.items) && findResp.json.items.length > 0) {
+      contactId = findResp.json.items[0].id;
     }
 
-    // 2) Create or update
-    let created = false;
+    // 2. Create or update contact
     if (!contactId) {
       const createResp = await sysFetch("/contacts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
-          firstName: first_name || undefined,
-          fields: score !== null ? [{ slug: "score", value: score }] : undefined,
+          firstName: first_name,
+          fields: [{ slug: "score", value: score }],
         }),
       });
-      if (!createResp.ok) {
-        return res.status(500).json({
-          error: "Failed to create contact",
-          detail: createResp.text,
-        });
-      }
-      const createdData = createResp.json;
-      contactId = createdData.id;
-      created = true;
+      if (!createResp.ok) return res.status(500).json({ error: "Create failed", detail: createResp.text });
+      contactId = createResp.json.id;
     } else {
-      const patchBody = { firstName: first_name || undefined };
-      if (score !== null) {
-        patchBody.fields = [{ slug: "score", value: score }];
-      }
       const patchResp = await sysFetch(`/contacts/${contactId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/merge-patch+json" },
-        body: JSON.stringify(patchBody),
+        body: JSON.stringify({
+          firstName: first_name,
+          fields: [{ slug: "score", value: score }],
+        }),
       });
-      if (!patchResp.ok) {
-        return res.status(500).json({
-          error: "Failed to update contact",
-          detail: patchResp.text,
-        });
-      }
+      if (!patchResp.ok) return res.status(500).json({ error: "Update failed", detail: patchResp.text });
     }
 
-    // 3) Fetch all tags
-    const tagsResp = await sysFetch("/tags?limit=500");
-    let existingTags = [];
-    if (tagsResp.ok && tagsResp.json) {
-      if (Array.isArray(tagsResp.json)) {
-        existingTags = tagsResp.json;
-      } else if (Array.isArray(tagsResp.json.items)) {
-        existingTags = tagsResp.json.items;
-      } else if (Array.isArray(tagsResp.json.data)) {
-        existingTags = tagsResp.json.data;
-      }
-    }
-    const tagNameToId = {};
-    existingTags.forEach(t => {
-      if (t && t.name && t.id) {
-        tagNameToId[t.name.toLowerCase()] = t.id;
-      }
-    });
-
-    // 4) Resolve tag IDs (create if missing)
-    const resolvedTagIds = [];
-    for (const tagName of tagNames) {
-      const key = tagName.toLowerCase();
-      if (tagNameToId[key]) {
-        resolvedTagIds.push(tagNameToId[key]);
-      } else {
-        const createTagResp = await sysFetch("/tags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tagName }),
-        });
-        if (createTagResp.ok && createTagResp.json) {
-          const newTag = createTagResp.json;
-          const newTagId = newTag.id || (newTag.data && newTag.data.id);
-          if (newTagId) {
-            resolvedTagIds.push(newTagId);
-          }
-        }
-      }
-    }
-
-    // 5) Get current tags on contact
-    const contactResp = await sysFetch(`/contacts/${contactId}`);
-    const freshContact = (contactResp.ok && contactResp.json)
-      ? (contactResp.json.contact || contactResp.json)
-      : null;
-    const existingAssignedTags = Array.isArray(freshContact?.tags)
-      ? freshContact.tags
-      : [];
-
-    // Remove only assessment tags
-    const assessmentNames = ["sadone", "saresult1", "saresult2", "saresult3"];
-    for (const t of existingAssignedTags) {
-      const name = (t.name || "").toLowerCase();
-      if (assessmentNames.includes(name)) {
-        await sysFetch(`/contacts/${contactId}/tags/${t.id}`, { method: "DELETE" });
-      }
-    }
-
-    // 6) Assign new tags
-    const assignedTagIds = [];
-    for (const tid of resolvedTagIds) {
-      const assignResp = await sysFetch(`/contacts/${contactId}/tags`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tagId: tid }),
-      });
-      if (assignResp.ok) {
-        assignedTagIds.push(tid);
-      }
-    }
-
-    // 7) Return final updated contact
-    const finalResp = await sysFetch(`/contacts/${contactId}`);
-    const finalContact = (f
+    // 3. Return success
+    return res.json({ success: true, contactId, email, first_name, score, tagNames });
+  } catch (err) {
+    return res.status(500).json({ error: "Internal error", detail: err.message });
+  }
+};
