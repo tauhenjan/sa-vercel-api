@@ -66,7 +66,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // 1) First: find existing contact
+    // 1) Find existing contact
     let contactId = null;
     let contact = null;
     const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
@@ -78,7 +78,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 2) If not found → create contact
+    // 2) Create or update
     let created = false;
     if (!contactId) {
       const createResp = await sysFetch("/contacts", {
@@ -91,13 +91,15 @@ module.exports = async function handler(req, res) {
         }),
       });
       if (!createResp.ok) {
-        return res.status(500).json({ error: "Failed to create contact", detail: createResp.text });
+        return res.status(500).json({
+          error: "Failed to create contact",
+          detail: createResp.text,
+        });
       }
       const createdData = createResp.json;
       contactId = createdData.id;
       created = true;
     } else {
-      // 3) Update existing contact
       const patchBody = { firstName: first_name || undefined };
       if (score !== null) {
         patchBody.fields = [{ slug: "score", value: score }];
@@ -108,11 +110,14 @@ module.exports = async function handler(req, res) {
         body: JSON.stringify(patchBody),
       });
       if (!patchResp.ok) {
-        return res.status(500).json({ error: "Failed to update contact", detail: patchResp.text });
+        return res.status(500).json({
+          error: "Failed to update contact",
+          detail: patchResp.text,
+        });
       }
     }
 
-    // 4) Fetch all tags once
+    // 3) Fetch all tags
     const tagsResp = await sysFetch("/tags?limit=500");
     let existingTags = [];
     if (tagsResp.ok && tagsResp.json) {
@@ -131,7 +136,7 @@ module.exports = async function handler(req, res) {
       }
     });
 
-    // 5) Resolve tag IDs (create if missing)
+    // 4) Resolve tag IDs (create if missing)
     const resolvedTagIds = [];
     for (const tagName of tagNames) {
       const key = tagName.toLowerCase();
@@ -153,14 +158,16 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 6) Get current tags on contact
+    // 5) Get current tags on contact
     const contactResp = await sysFetch(`/contacts/${contactId}`);
     const freshContact = (contactResp.ok && contactResp.json)
       ? (contactResp.json.contact || contactResp.json)
       : null;
-    const existingAssignedTags = Array.isArray(freshContact?.tags) ? freshContact.tags : [];
+    const existingAssignedTags = Array.isArray(freshContact?.tags)
+      ? freshContact.tags
+      : [];
 
-    // Only remove "assessment tags" (sadone, saresult1/2/3)
+    // Remove only assessment tags
     const assessmentNames = ["sadone", "saresult1", "saresult2", "saresult3"];
     for (const t of existingAssignedTags) {
       const name = (t.name || "").toLowerCase();
@@ -169,7 +176,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 7) Assign new tags
+    // 6) Assign new tags
     const assignedTagIds = [];
     for (const tid of resolvedTagIds) {
       const assignResp = await sysFetch(`/contacts/${contactId}/tags`, {
@@ -182,18 +189,6 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 8) Return final updated contact
+    // 7) Return final updated contact
     const finalResp = await sysFetch(`/contacts/${contactId}`);
-    const finalContact = (finalResp.ok && finalResp.json)
-      ? (finalResp.json.contact || finalResp.json)
-      : null;
-
-    return res.json({
-      success: true,
-      created,
-      contact: finalContact,
-      assignedTagIds,
-    });
-  } catch (err) {
-    console.error("Server error:", err);
-    retu
+    const finalContact = (f
