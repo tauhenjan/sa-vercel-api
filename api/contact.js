@@ -1,7 +1,5 @@
 // api/contact.js
-
 // Vercel serverless function to sync Typebot → Systeme.io
-
 // Requires env var: SYSTEME_API_KEY
 
 module.exports = async function handler(req, res) {
