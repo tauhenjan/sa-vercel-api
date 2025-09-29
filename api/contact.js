@@ -1,21 +1,16 @@
 // api/contact.js
-// Vercel serverless function (CommonJS). Node 18+ has global fetch.
-// Expects POST JSON: { email, first_name, score, tagNames: ["sadone","saresult2"] }
-// Requires SYSTEME_API_KEY in Vercel Environment Variables.
+// Vercel serverless function to sync Typebot → Systeme.io
+// Requires env var: SYSTEME_API_KEY
 
 module.exports = async function handler(req, res) {
-  const DEBUG = process.env.DEBUG === "1";
   const API_KEY = process.env.SYSTEME_API_KEY;
   const BASE = "https://api.systeme.io/api";
-
-  function dbg(...args) { if (DEBUG) console.log(...args); }
 
   async function readBody() {
     if (req.body && Object.keys(req.body).length > 0) return req.body;
     let raw = "";
     for await (const chunk of req) raw += chunk;
-    if (!raw) return {};
-    try { return JSON.parse(raw); } catch { return {}; }
+    return raw ? JSON.parse(raw) : {};
   }
 
   async function sysFetch(path, opts = {}) {
@@ -25,7 +20,7 @@ module.exports = async function handler(req, res) {
     const text = await resp.text().catch(() => "");
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch {}
-    dbg("sysFetch:", opts.method || "GET", url, "→", resp.status);
+    console.log("sysFetch:", opts.method || "GET", url, "→", resp.status);
     return { ok: resp.ok, status: resp.status, json, text };
   }
 
@@ -34,20 +29,17 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = await readBody();
-    dbg("parsed body:", body);
-
     const email = (body.email || "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "email required" });
 
-    const first_name = (body.first_name || body.firstName || "").trim();
+    const first_name = (body.first_name || "").trim();
     const score = body.score !== undefined ? String(body.score).trim() : null;
 
-    let tagNames = body.tagNames || [];
-    if (!Array.isArray(tagNames)) tagNames = [tagNames];
+    let tagNames = Array.isArray(body.tagNames) ? body.tagNames : [body.tagNames];
     tagNames = tagNames.filter(Boolean).map(t => t.trim());
     if (!tagNames.includes("sadone")) tagNames.unshift("sadone");
 
-    dbg("normalized:", { email, first_name, score, tagNames });
+    console.log("normalized:", { email, first_name, score, tagNames });
 
     // --- 1) Find contact ---
     let contactId = null;
@@ -90,8 +82,8 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // --- 3) Resolve tag IDs ---
-    const tagsResp = await sysFetch("/tags?limit=500");
+    // --- 3) Resolve tag IDs (fix: use limit=100) ---
+    const tagsResp = await sysFetch("/tags?limit=100");
     const existing = tagsResp.ok && tagsResp.json ? (tagsResp.json.items || tagsResp.json.data || []) : [];
     const tagMap = {};
     existing.forEach(t => { tagMap[t.name.toLowerCase()] = t.id; });
@@ -103,21 +95,7 @@ module.exports = async function handler(req, res) {
       if (tagMap[key]) {
         resolvedTagIds.push(tagMap[key]);
       } else {
-        const createTag = await sysFetch("/tags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: tname })
-        });
-        if (createTag.ok && createTag.json && createTag.json.id) {
-          resolvedTagIds.push(createTag.json.id);
-        } else {
-          // try re-fetch
-          const retry = await sysFetch("/tags?limit=500");
-          const arr = retry.ok && retry.json ? (retry.json.items || retry.json.data || []) : [];
-          const found = arr.find(x => x.name.toLowerCase() === key);
-          if (found) resolvedTagIds.push(found.id);
-          else tagErrors.push({ tag: tname, detail: createTag.text });
-        }
+        tagErrors.push({ tag: tname, detail: "Tag not found" });
       }
     }
 
@@ -153,17 +131,4 @@ module.exports = async function handler(req, res) {
 
     return res.json({
       success: true,
-      contactId,
-      finalContact,
-      resolvedTagIds,
-      assignedTagIds,
-      removedTagIds,
-      tagErrors,
-      assignErrors
-    });
-
-  } catch (err) {
-    console.error("server error:", err);
-    return res.status(500).json({ error: "Internal server error", detail: err.message });
-  }
-};
+      contactId
