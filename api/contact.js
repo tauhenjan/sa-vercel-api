@@ -20,7 +20,7 @@ module.exports = async function handler(req, res) {
 
   email = (email || "").toString().trim().toLowerCase();
   first_name = first_name ? String(first_name).trim() : "";
-  score = (score === undefined || score === null) ? null : String(score).trim();
+  score = score != null ? String(score).trim() : null;
 
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
@@ -30,7 +30,7 @@ module.exports = async function handler(req, res) {
   if (!Array.isArray(tagNames)) tagNames = [String(tagNames)];
   tagNames = tagNames.map(t => (t || "").toString().trim()).filter(Boolean);
 
-  // Ensure "sadone" is always present
+  // Always ensure "sadone" is present
   if (!tagNames.map(t => t.toLowerCase()).includes("sadone")) {
     tagNames.unshift("sadone");
   }
@@ -66,63 +66,9 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // 1) Fetch tags and normalize
-    const tagsResp = await sysFetch("/tags?limit=500");
-    let existingTags = [];
-    if (tagsResp.ok && tagsResp.json) {
-      if (Array.isArray(tagsResp.json)) {
-        existingTags = tagsResp.json;
-      } else if (Array.isArray(tagsResp.json.items)) {
-        existingTags = tagsResp.json.items;
-      } else if (Array.isArray(tagsResp.json.data)) {
-        existingTags = tagsResp.json.data;
-      } else {
-        dbg("Unexpected tags response shape:", tagsResp.json);
-      }
-    }
-
-    const tagNameToId = {};
-    existingTags.forEach(t => {
-      if (t && t.name && t.id) {
-        tagNameToId[t.name.toLowerCase()] = t.id;
-      }
-    });
-
-    // 2) Resolve tagIds (create if missing)
-    const resolvedTagIds = [];
-    const tagResolutionErrors = [];
-
-    for (const tagName of tagNames) {
-      const key = tagName.toLowerCase();
-      if (tagNameToId[key]) {
-        resolvedTagIds.push(tagNameToId[key]);
-        continue;
-      }
-
-      const createTagResp = await sysFetch("/tags", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tagName }),
-      });
-
-      if (createTagResp.ok && createTagResp.json) {
-        const newTag = createTagResp.json;
-        const newTagId = newTag.id || (newTag.data && newTag.data.id);
-        if (newTagId) {
-          tagNameToId[key] = newTagId;
-          resolvedTagIds.push(newTagId);
-        } else {
-          tagResolutionErrors.push({ tagName, detail: newTag });
-        }
-      } else {
-        tagResolutionErrors.push({ tagName, detail: createTagResp.text });
-      }
-    }
-
-    // 3) Find or create contact
+    // 1) First: find existing contact
     let contactId = null;
     let contact = null;
-
     const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
     if (findResp.ok && findResp.json) {
       const items = findResp.json.items || findResp.json.data || findResp.json;
@@ -132,6 +78,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // 2) If not found → create contact
     let created = false;
     if (!contactId) {
       const createResp = await sysFetch("/contacts", {
@@ -150,6 +97,7 @@ module.exports = async function handler(req, res) {
       contactId = createdData.id;
       created = true;
     } else {
+      // 3) Update existing contact
       const patchBody = { firstName: first_name || undefined };
       if (score !== null) {
         patchBody.fields = [{ slug: "score", value: score }];
@@ -164,28 +112,64 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 4) Get current tags on contact
+    // 4) Fetch all tags once
+    const tagsResp = await sysFetch("/tags?limit=500");
+    let existingTags = [];
+    if (tagsResp.ok && tagsResp.json) {
+      if (Array.isArray(tagsResp.json)) {
+        existingTags = tagsResp.json;
+      } else if (Array.isArray(tagsResp.json.items)) {
+        existingTags = tagsResp.json.items;
+      } else if (Array.isArray(tagsResp.json.data)) {
+        existingTags = tagsResp.json.data;
+      }
+    }
+    const tagNameToId = {};
+    existingTags.forEach(t => {
+      if (t && t.name && t.id) {
+        tagNameToId[t.name.toLowerCase()] = t.id;
+      }
+    });
+
+    // 5) Resolve tag IDs (create if missing)
+    const resolvedTagIds = [];
+    for (const tagName of tagNames) {
+      const key = tagName.toLowerCase();
+      if (tagNameToId[key]) {
+        resolvedTagIds.push(tagNameToId[key]);
+      } else {
+        const createTagResp = await sysFetch("/tags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: tagName }),
+        });
+        if (createTagResp.ok && createTagResp.json) {
+          const newTag = createTagResp.json;
+          const newTagId = newTag.id || (newTag.data && newTag.data.id);
+          if (newTagId) {
+            resolvedTagIds.push(newTagId);
+          }
+        }
+      }
+    }
+
+    // 6) Get current tags on contact
     const contactResp = await sysFetch(`/contacts/${contactId}`);
     const freshContact = (contactResp.ok && contactResp.json)
       ? (contactResp.json.contact || contactResp.json)
       : null;
     const existingAssignedTags = Array.isArray(freshContact?.tags) ? freshContact.tags : [];
 
-    // Filter only "assessment tags" (sadone + saresult1/2/3) to remove
-    const assessmentTagIds = Object.entries(tagNameToId)
-      .filter(([name]) => ["sadone", "saresult1", "saresult2", "saresult3"].includes(name))
-      .map(([_, id]) => id);
-
-    const removedTagIds = [];
+    // Only remove "assessment tags" (sadone, saresult1/2/3)
+    const assessmentNames = ["sadone", "saresult1", "saresult2", "saresult3"];
     for (const t of existingAssignedTags) {
-      const tid = t.id;
-      if (assessmentTagIds.includes(tid)) {
-        await sysFetch(`/contacts/${contactId}/tags/${tid}`, { method: "DELETE" });
-        removedTagIds.push(tid);
+      const name = (t.name || "").toLowerCase();
+      if (assessmentNames.includes(name)) {
+        await sysFetch(`/contacts/${contactId}/tags/${t.id}`, { method: "DELETE" });
       }
     }
 
-    // 5) Assign new resolved assessment tags
+    // 7) Assign new tags
     const assignedTagIds = [];
     for (const tid of resolvedTagIds) {
       const assignResp = await sysFetch(`/contacts/${contactId}/tags`, {
@@ -198,7 +182,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 6) Return final
+    // 8) Return final updated contact
     const finalResp = await sysFetch(`/contacts/${contactId}`);
     const finalContact = (finalResp.ok && finalResp.json)
       ? (finalResp.json.contact || finalResp.json)
@@ -208,13 +192,8 @@ module.exports = async function handler(req, res) {
       success: true,
       created,
       contact: finalContact,
-      resolvedTagIds,
-      removedTagIds,
       assignedTagIds,
-      tagResolutionErrors,
     });
   } catch (err) {
     console.error("Server error:", err);
-    return res.status(500).json({ error: "Internal server error", detail: err.message });
-  }
-};
+    retu
