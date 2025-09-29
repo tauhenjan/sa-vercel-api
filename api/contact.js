@@ -1,101 +1,95 @@
-// api/contact.js
+import fetch from "node-fetch";
 
-module.exports = async function handler(req, res) {
-  const apiKey = process.env.SYSTEME_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "Missing SYSTEME_API_KEY" });
+const API_BASE = "https://api.systeme.io/api";
+const API_KEY = process.env.SIO_API_KEY; // set in Vercel environment
+
+async function sysFetch(path, options = {}) {
+  const url = `${API_BASE}${path}`;
+  const opts = {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  };
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.error("Non-JSON response from Systeme.io:", text);
+    throw new Error("Systeme.io did not return JSON");
   }
+}
 
+export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  const baseUrl = "https://api.systeme.io/api";
-  const { email, first_name, score, tagNames = [] } = req.body || {};
-  if (!email) {
-    return res.status(400).json({ error: "Email is required" });
-  }
-
-  async function sysFetch(path, opts = {}) {
-    const resp = await fetch(`${baseUrl}${path}`, {
-      ...opts,
-      headers: {
-        ...(opts.headers || {}),
-        "X-API-Key": apiKey,
-        "Content-Type": opts.body
-          ? opts.headers?.["Content-Type"] || "application/json"
-          : undefined,
-      },
-    });
-    const text = await resp.text();
-    let json = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      // leave json null if parsing fails
-    }
-    return { ok: resp.ok, status: resp.status, json, text };
+    res.status(405).json({ error: "Method not allowed" });
+    return;
   }
 
   try {
-    // 1. Try to find contact by email
-    let contactId = null;
-    const findResp = await sysFetch(
-      `/contacts?email=${encodeURIComponent(email)}&limit=10`
-    );
+    const { email, first_name, score, tagNames = [] } = req.body;
 
-    if (findResp.ok && findResp.json) {
-      let items = [];
-      if (Array.isArray(findResp.json)) {
-        items = findResp.json;
-      } else if (findResp.json.items) {
-        items = findResp.json.items;
-      } else if (findResp.json.data) {
-        items = findResp.json.data;
-      }
-      if (Array.isArray(items) && items.length > 0) {
-        contactId = items[0].id;
-      }
+    // 1. Fetch tags & map names → IDs
+    const allTags = await sysFetch("/tags?limit=100");
+    const tagMap = {};
+    if (allTags.data) {
+      allTags.data.forEach((t) => {
+        tagMap[t.name] = t.id;
+      });
     }
+    const tagIds = tagNames
+      .map((n) => tagMap[n])
+      .filter((id) => id !== undefined);
+
+    // 2. Lookup contact by email
+    const lookup = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=10`);
+    let contactId = lookup?.data?.[0]?.id;
 
     if (!contactId) {
-      return res.status(404).json({
-        error: "No contact found for this email",
-        raw: findResp.json,
+      // 3a. Create new contact
+      const create = await sysFetch("/contacts", {
+        method: "POST",
+        body: JSON.stringify({
+          email,
+          first_name,
+          fields: [{ slug: "score", value: score }],
+          tagIds,
+        }),
       });
+      if (!create.id) throw new Error("Create failed");
+      contactId = create.id;
+    } else {
+      // 3b. Update existing contact
+      await sysFetch(`/contacts/${contactId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/merge-patch+json" },
+        body: JSON.stringify({
+          first_name,
+          fields: [{ slug: "score", value: score }],
+        }),
+      });
+
+      if (tagIds.length) {
+        await sysFetch(`/contacts/${contactId}/tags`, {
+          method: "POST",
+          body: JSON.stringify({ tagIds }),
+        });
+      }
     }
 
-    // 2. Update existing contact
-const patchResp = await sysFetch(`/contacts/${contactId}`, {
-  method: "PATCH",
-  headers: { "Content-Type": "application/merge-patch+json" },
-  body: JSON.stringify({
-    first_name, // use snake_case
-    fields: [
-      { slug: "score", value: score }
-    ]
-  }),
-});
-
-
-    if (!patchResp.ok) {
-      return res.status(500).json({
-        error: "Update failed",
-        status: patchResp.status,
-        detail: patchResp.text,
-      });
-    }
-
-    // 3. Done
-    return res.json({
+    res.json({
       success: true,
       contactId,
       email,
       first_name,
       score,
-      tagNames,
+      tagIds,
     });
   } catch (err) {
-    return res.status(500).json({ error: "Internal error", detail: err.message });
+    console.error("Server error:", err);
+    res.status(500).json({ error: "Internal server error", detail: err.message });
   }
-};
+}
