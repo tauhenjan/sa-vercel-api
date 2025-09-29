@@ -16,7 +16,7 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Email is required" });
   }
 
-  // ---- Helper: fetch wrapper
+  // ---- Helper fetch
   async function sysFetch(path, opts = {}) {
     const resp = await fetch(`${baseUrl}${path}`, {
       ...opts,
@@ -33,66 +33,58 @@ module.exports = async function handler(req, res) {
     try {
       json = text ? JSON.parse(text) : null;
     } catch {
-      // not JSON
+      // ignore parse errors
     }
     return { ok: resp.ok, status: resp.status, json, text };
   }
 
   try {
-    // 1. Try to find existing contact by email
+    // 1. Try to find contact by email
     let contactId = null;
-    const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
+    const findResp = await sysFetch(
+      `/contacts?email=${encodeURIComponent(email)}&limit=1`
+    );
 
     if (findResp.ok && findResp.json) {
-      const items =
-        findResp.json.items ||
-        findResp.json.data ||
-        (Array.isArray(findResp.json) ? findResp.json : []);
-
+      let items = [];
+      if (Array.isArray(findResp.json)) {
+        items = findResp.json;
+      } else if (findResp.json.items) {
+        items = findResp.json.items;
+      } else if (findResp.json.data) {
+        items = findResp.json.data;
+      }
       if (Array.isArray(items) && items.length > 0) {
         contactId = items[0].id;
       }
     }
 
-    // 2. Create or update
+    // Debug: return raw lookup if no contactId found
     if (!contactId) {
-      // CREATE new
-      const createResp = await sysFetch("/contacts", {
-        method: "POST",
-        body: JSON.stringify({
-          email,
-          firstName: first_name,
-          fields: [{ slug: "score", value: score }],
-        }),
+      return res.status(200).json({
+        debug: "Lookup failed → no contactId",
+        raw: findResp.json,
       });
-      if (!createResp.ok) {
-        return res.status(500).json({
-          error: "Create failed",
-          status: createResp.status,
-          detail: createResp.text,
-        });
-      }
-      contactId = createResp.json.id;
-    } else {
-      // UPDATE existing
-      const patchResp = await sysFetch(`/contacts/${contactId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/merge-patch+json" },
-        body: JSON.stringify({
-          firstName: first_name,
-          fields: [{ slug: "score", value: score }],
-        }),
-      });
-      if (!patchResp.ok) {
-        return res.status(500).json({
-          error: "Update failed",
-          status: patchResp.status,
-          detail: patchResp.text,
-        });
-      }
     }
 
-    // 3. Return success
+    // 2. Update existing contact (never create duplicate)
+    const patchResp = await sysFetch(`/contacts/${contactId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/merge-patch+json" },
+      body: JSON.stringify({
+        firstName: first_name,
+        fields: [{ slug: "score", value: score }],
+      }),
+    });
+    if (!patchResp.ok) {
+      return res.status(500).json({
+        error: "Update failed",
+        status: patchResp.status,
+        detail: patchResp.text,
+      });
+    }
+
+    // 3. Done
     return res.json({
       success: true,
       contactId,
