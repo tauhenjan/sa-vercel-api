@@ -66,14 +66,17 @@ module.exports = async function handler(req, res) {
     }
 
     // 2. Update existing contact
-    const patchResp = await sysFetch(`/contacts/${contactId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/merge-patch+json" },
-      body: JSON.stringify({
-        firstName: first_name,
-        fields: [{ slug: "score", value: score }],
-      }),
-    });
+const patchResp = await sysFetch(`/contacts/${contactId}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/merge-patch+json" },
+  body: JSON.stringify({
+    first_name, // use snake_case
+    fields: [
+      { slug: "score", value: score }
+    ]
+  }),
+});
+
 
     if (!patchResp.ok) {
       return res.status(500).json({
