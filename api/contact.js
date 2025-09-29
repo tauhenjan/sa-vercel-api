@@ -23,21 +23,27 @@ module.exports = async function handler(req, res) {
       headers: {
         ...(opts.headers || {}),
         "X-API-Key": apiKey,
-        "Content-Type": opts.body ? opts.headers?.["Content-Type"] || "application/json" : undefined,
+        "Content-Type": opts.body
+          ? opts.headers?.["Content-Type"] || "application/json"
+          : undefined,
       },
     });
     const text = await resp.text();
+    let json = null;
     try {
-      return { ok: resp.ok, status: resp.status, json: JSON.parse(text) };
+      json = text ? JSON.parse(text) : null;
     } catch {
-      return { ok: resp.ok, status: resp.status, text };
+      // keep raw text if not JSON
     }
+    return { ok: resp.ok, status: resp.status, json, text };
   }
 
   try {
     // 1. Find existing contact
     let contactId = null;
-    const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
+    const findResp = await sysFetch(
+      `/contacts?email=${encodeURIComponent(email)}&limit=1`
+    );
     if (findResp.ok && Array.isArray(findResp.json?.items) && findResp.json.items.length > 0) {
       contactId = findResp.json.items[0].id;
     }
@@ -52,7 +58,13 @@ module.exports = async function handler(req, res) {
           fields: [{ slug: "score", value: score }],
         }),
       });
-      if (!createResp.ok) return res.status(500).json({ error: "Create failed", detail: createResp.text });
+      if (!createResp.ok) {
+        return res.status(500).json({
+          error: "Create failed",
+          status: createResp.status,
+          detail: createResp.text,
+        });
+      }
       contactId = createResp.json.id;
     } else {
       const patchResp = await sysFetch(`/contacts/${contactId}`, {
@@ -63,11 +75,24 @@ module.exports = async function handler(req, res) {
           fields: [{ slug: "score", value: score }],
         }),
       });
-      if (!patchResp.ok) return res.status(500).json({ error: "Update failed", detail: patchResp.text });
+      if (!patchResp.ok) {
+        return res.status(500).json({
+          error: "Update failed",
+          status: patchResp.status,
+          detail: patchResp.text,
+        });
+      }
     }
 
     // 3. Return success
-    return res.json({ success: true, contactId, email, first_name, score, tagNames });
+    return res.json({
+      success: true,
+      contactId,
+      email,
+      first_name,
+      score,
+      tagNames,
+    });
   } catch (err) {
     return res.status(500).json({ error: "Internal error", detail: err.message });
   }
