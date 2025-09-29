@@ -33,23 +33,30 @@ module.exports = async function handler(req, res) {
     try {
       json = text ? JSON.parse(text) : null;
     } catch {
-      // keep raw text if not JSON
+      // not JSON
     }
     return { ok: resp.ok, status: resp.status, json, text };
   }
 
   try {
-    // 1. Find existing contact
+    // 1. Try to find existing contact by email
     let contactId = null;
-    const findResp = await sysFetch(
-      `/contacts?email=${encodeURIComponent(email)}&limit=1`
-    );
-    if (findResp.ok && Array.isArray(findResp.json?.items) && findResp.json.items.length > 0) {
-      contactId = findResp.json.items[0].id;
+    const findResp = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=1`);
+
+    if (findResp.ok && findResp.json) {
+      const items =
+        findResp.json.items ||
+        findResp.json.data ||
+        (Array.isArray(findResp.json) ? findResp.json : []);
+
+      if (Array.isArray(items) && items.length > 0) {
+        contactId = items[0].id;
+      }
     }
 
-    // 2. Create or update contact
+    // 2. Create or update
     if (!contactId) {
+      // CREATE new
       const createResp = await sysFetch("/contacts", {
         method: "POST",
         body: JSON.stringify({
@@ -67,6 +74,7 @@ module.exports = async function handler(req, res) {
       }
       contactId = createResp.json.id;
     } else {
+      // UPDATE existing
       const patchResp = await sysFetch(`/contacts/${contactId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/merge-patch+json" },
