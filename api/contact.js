@@ -16,7 +16,6 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Email is required" });
   }
 
-  // ---- Helper fetch
   async function sysFetch(path, opts = {}) {
     const resp = await fetch(`${baseUrl}${path}`, {
       ...opts,
@@ -33,7 +32,7 @@ module.exports = async function handler(req, res) {
     try {
       json = text ? JSON.parse(text) : null;
     } catch {
-      // ignore parse errors
+      // leave json null if parsing fails
     }
     return { ok: resp.ok, status: resp.status, json, text };
   }
@@ -42,7 +41,7 @@ module.exports = async function handler(req, res) {
     // 1. Try to find contact by email
     let contactId = null;
     const findResp = await sysFetch(
-      `/contacts?email=${encodeURIComponent(email)}&limit=1`
+      `/contacts?email=${encodeURIComponent(email)}&limit=10`
     );
 
     if (findResp.ok && findResp.json) {
@@ -59,15 +58,14 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Debug: return raw lookup if no contactId found
     if (!contactId) {
-      return res.status(200).json({
-        debug: "Lookup failed → no contactId",
+      return res.status(404).json({
+        error: "No contact found for this email",
         raw: findResp.json,
       });
     }
 
-    // 2. Update existing contact (never create duplicate)
+    // 2. Update existing contact
     const patchResp = await sysFetch(`/contacts/${contactId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/merge-patch+json" },
@@ -76,6 +74,7 @@ module.exports = async function handler(req, res) {
         fields: [{ slug: "score", value: score }],
       }),
     });
+
     if (!patchResp.ok) {
       return res.status(500).json({
         error: "Update failed",
