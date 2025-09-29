@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 const API_BASE = "https://api.systeme.io/api";
 const API_KEY = process.env.SIO_API_KEY; // set in Vercel environment
 
@@ -45,7 +43,9 @@ export default async function handler(req, res) {
       .filter((id) => id !== undefined);
 
     // 2. Lookup contact by email
-    const lookup = await sysFetch(`/contacts?email=${encodeURIComponent(email)}&limit=10`);
+    const lookup = await sysFetch(
+      `/contacts?email=${encodeURIComponent(email)}&limit=10`
+    );
     let contactId = lookup?.data?.[0]?.id;
 
     if (!contactId) {
@@ -90,6 +90,9 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("Server error:", err);
-    res.status(500).json({ error: "Internal server error", detail: err.message });
+    res.status(500).json({
+      error: "Internal server error",
+      detail: err.message,
+    });
   }
 }
